@@ -169,7 +169,7 @@ void ESPUtils::loop(void) {
   #endif
 
   // If OTA mode, handle the update
-  #ifdef USE_OTA
+  #ifdef USE_OTA 
   if(OTAMan != NULL){
     OTAMan->loop();
     return;

@@ -7,23 +7,41 @@
   Released into the public domain.
 */
 
-//#include <ESPUtils.h>
 #include <WiFiManager.h>
+#define UTILS_SF_CAPACITY 20
+#define UTILS_SF_READ_TIME 1000
 
-enum UtilSFRARequestState { sf_idle, sf_flow, sf_platform };
-enum UtilSFRATokenState { sf_empty, sf_request, sf_refresh, sf_valid };
+enum UtilSFRATokenState { 
+  sf_token_empty, 
+  sf_token_request, 
+  sf_token_refresh, 
+  sf_token_valid
+};
 
-typedef void (*SFManagerCallback)(String data, bool success);
+enum UtilSFRARequestType { 
+  sf_type_flow, 
+  sf_type_event
+};
 
-//typedef void (*SFManagerTokenCallback)(UtilMessage message);
+typedef void (*UtilSFRACallback)(bool success, String payload);
+
+struct UtilSFRARequest {
+  UtilSFRARequestType type;
+  String targetName; 
+  String requestBody;
+  UtilSFRACallback callback;
+} ;
 
 //------------------------------------------------------------------------------------
 class SFManager{
 public:
-  unsigned long retryTime;
-  unsigned long refreshTime;
-  UtilSFRARequestState  requestState = sf_idle;
-  UtilSFRATokenState    tokenState = sf_empty;
+  unsigned long retryTime = millis();
+  unsigned long refreshTime = 0;
+  UtilSFRATokenState    tokenState = sf_token_empty;
+
+  int pushIndex = 0;
+  int popIndex = 0;
+  UtilSFRARequest requestList[UTILS_SF_CAPACITY];
 
   String token = "";
   String instance = "";
@@ -31,10 +49,11 @@ public:
   int  hostPort = 443;
   String authHost = "login.salesforce.com";
 
+  bool pendingRequests();
   void requestToken();
   void refreshToken();
-  void flowRequest(SFManagerCallback callback);
-  void platformRequest(SFManagerCallback callback);
+  void eventRequest(String eventName, String requestBody, UtilSFRACallback callback);
+  void flowRequest(String flowName, String requestBody, UtilSFRACallback callback);
   void loop();
   
   //SFManager(){requestToken();};
@@ -42,21 +61,36 @@ public:
 //protected:
 
 private:
-  SFManagerCallback tokenCallback;
-  SFManagerCallback refreshCallback;
-  SFManagerCallback flowCallback;
-  SFManagerCallback platformCallback;
-  
+  // SFManagerCallback tokenCallback;
+  // SFManagerCallback refreshCallback;
+  // SFManagerCallback flowCallback;
+  // SFManagerCallback platformCallback;
+
+  WiFiClientSecure getAuthClient();
+  WiFiClientSecure getInstanceClient();
+  int nextIndex(int index);
   bool verifyConnection();
   bool verifyToken();
   void setNeedsRetry();
   void setNeedsRefresh();
   
-  void flowRequest();
-  void platformRequest();
+  void executeRequest();
+  bool executeEventRequest(String eventName, String requestBody, UtilSFRACallback callback);
+  bool executeFlowRequest(String flowName, String requestBody, UtilSFRACallback callback);
+  void scheduleRequest(UtilSFRARequestType type, String flowName, String requestBody, UtilSFRACallback callback);
 };
 
 SFManager SFMan;
+
+//------------------------------------------------------------------------------------
+bool SFManager::pendingRequests(){
+  return nextIndex(popIndex) == pushIndex;
+}
+
+//------------------------------------------------------------------------------------
+int SFManager::nextIndex(int index){
+  return ++index == UTILS_SF_CAPACITY ? 0 : index;
+}
 
 //------------------------------------------------------------------------------------
 void SFManager::setNeedsRetry(){
@@ -85,24 +119,25 @@ bool SFManager::verifyConnection(){
     WiFiManager::beginStation();
   }
 
-  setNeedsRetry();
+  //setNeedsRetry();
   return false;
 }
 
 //------------------------------------------------------------------------------------
 bool SFManager::verifyToken(){
-  if( tokenState == sf_valid){
+  Serial.println("Verify Token");
+
+  if( tokenState == sf_token_valid){
     Serial.println("SFManager : Valid token.");
     return true;
   }
     
-  if(tokenState == sf_empty)
+  if(tokenState == sf_token_empty)
   {
     Serial.println("SFManager : Requesting token");
-    //requestToken();
   }
 
-  if(tokenState == sf_request || tokenState == sf_refresh){
+  if(tokenState == sf_token_request || tokenState == sf_token_refresh){
     Serial.println("SFManager : Waiting for token");
   }
 
@@ -111,10 +146,58 @@ bool SFManager::verifyToken(){
 }
 
 //------------------------------------------------------------------------------------
-void SFManager::requestToken(){
-  tokenState = sf_request;
+WiFiClientSecure SFManager::getAuthClient(){
+  WiFiClientSecure client;
+  Serial.println("GetAuthClient");
   
   if(!verifyConnection()){
+     return client;
+  }
+
+  Serial.printf("Connecting to %s... ", authHost.c_str());
+  
+  if (!client.connect(authHost.c_str(), hostPort)) {
+    Serial.println("Failed.");
+    client.stop();
+    return client;
+  } 
+
+  Serial.printf("Success.");
+  return client;
+}
+
+//------------------------------------------------------------------------------------
+WiFiClientSecure SFManager::getInstanceClient(){
+  WiFiClientSecure client;
+  Serial.println("GetInstanceClient");
+
+  if(!verifyConnection()){
+     return client;
+  }
+
+  if(!verifyToken()){
+    return client;
+  }
+  
+  Serial.printf("Connecting to %s... ", instance.c_str());
+  
+  if (!client.connect(instance.c_str(), hostPort)) {
+    Serial.println("Failed.");
+    client.stop();
+    return client;
+  } 
+
+  Serial.printf("Success.");
+  return client;
+}
+
+//------------------------------------------------------------------------------------
+void SFManager::requestToken(){
+  Serial.println("Request Token");
+  tokenState = sf_token_request;
+  
+  WiFiClientSecure client = getAuthClient();
+  if( !client.connected() ){
     return;
   }
 
@@ -124,16 +207,6 @@ void SFManager::requestToken(){
     "&password=" + String(SFRA_PASS);
   Serial.println(requestBody);
 
-  WiFiClientSecure client;
-  Serial.printf("Connecting to %s... ", authHost.c_str());
-  if (!client.connect(authHost.c_str(), hostPort)) {
-    Serial.println("Failed.");
-    setNeedsRetry();
-    client.stop();
-    return;
-  } 
-  Serial.println("Success.\n");
-  
   client.println("POST /services/oauth2/token HTTP/1.1");
   client.println("Host: "+ authHost);
   client.println("Content-Type: application/x-www-form-urlencoded");
@@ -155,7 +228,7 @@ void SFManager::requestToken(){
   String line = client.readString();
   if (line.indexOf("\"access_token\":\"") != -1) {
     setNeedsRefresh();
-    tokenState = sf_valid;
+    tokenState = sf_token_valid;
     token = line.substring(line.indexOf("\"access_token\":\"") + 16, line.indexOf("\",\"instance_url\""));
     instance = line.substring(line.indexOf("\"instance_url\":\"") + 16 + 8, line.indexOf("\",\"id\""));
     Serial.println("Auth Token: " + token);
@@ -235,42 +308,99 @@ void SFManager::refreshToken(){
   client.stop();  
   */
 }
-
+ 
 //------------------------------------------------------------------------------------
-void SFManager::flowRequest(SFManagerCallback callback){
-  if(platformCallback != nullptr){
-    Serial.println("SFManager : Pending Flow Request");
-  }
-
-  flowCallback = callback;
-  flowRequest();
+void SFManager::eventRequest(String eventName, String requestBody, UtilSFRACallback callback){
+  scheduleRequest(sf_type_event, eventName, requestBody, callback);
 }
 
 //------------------------------------------------------------------------------------
-void SFManager::flowRequest(){
-  requestState = sf_flow;
+void SFManager::flowRequest(String flowName, String requestBody, UtilSFRACallback callback){
+  scheduleRequest(sf_type_flow, flowName, requestBody, callback);
+}
 
-  if(!verifyToken()){
-    setNeedsRetry();
-    return;
+//------------------------------------------------------------------------------------
+void SFManager::scheduleRequest(UtilSFRARequestType type, String targetName, String requestBody, UtilSFRACallback callback){
+  requestList[pushIndex] = {type, targetName, requestBody, callback};
+  pushIndex = nextIndex(pushIndex);
+  //pushIndex = ++pushIndex == UTILS_SF_CAPACITY ? 0 : pushIndex;
+  Serial.println("Push: "+ String(pushIndex) +" - "+ String(popIndex));
+  executeRequest();
+}
+
+//------------------------------------------------------------------------------------
+void SFManager::executeRequest(){  
+  UtilSFRARequest request = requestList[popIndex];
+  bool success = false;
+
+  if(request.type == sf_type_event){
+    success = executeEventRequest(request.targetName, request.requestBody, request.callback);
+  } 
+  else if(request.type == sf_type_flow){
+    success = executeFlowRequest(request.targetName, request.requestBody, request.callback);
+  }
+
+  if( success ){
+    //popIndex = ++popIndex == UTILS_SF_CAPACITY ? 0 : popIndex;
+    popIndex = nextIndex(popIndex);
+    Serial.println("Pop: "+ String(pushIndex) +" - "+ String(popIndex));
+  }
+}
+
+//------------------------------------------------------------------------------------
+bool SFManager::executeEventRequest(String eventName, String requestBody, UtilSFRACallback callback){
+
+  WiFiClientSecure client = getInstanceClient();
+  if( !client.connected() ){
+    return false;
+  }
+
+  client.println("POST /services/data/"+ String(SFRA_API) +"/sobjects/"+ eventName +" HTTP/1.1");
+  client.println("Host: "+ instance);
+  client.println("Content-Type: application/json");
+  client.println("Content-Length: "+ String(requestBody.length(), DEC));
+  client.println("Authorization: Bearer "+ token);
+  client.println();
+  client.println(requestBody);
+
+  Serial.print("Platform Event result... ");
+  unsigned long readTime = millis() + UTILS_SF_READ_TIME;
+
+  while (client.connected() && readTime < millis()) {
+    String line = client.readStringUntil('\n');
+    Serial.print(line);
+    if (line == "\r") {
+      Serial.println("Done.");
+      break;
+    }
   }
   
-  String flow = "CloudBoard_IoT_Connector";
-  String requestBody = "{\"inputs\":[{\"spaceid\":\"77262\"}]}";
+  String line = client.readString();
+  client.stop(); 
 
-  Serial.println(requestBody);
-
-  WiFiClientSecure client;
-  Serial.printf("Connecting to %s... ", instance.c_str());
-  if (!client.connect(instance.c_str(), hostPort)) {
-    Serial.println("Failed.");
-    client.stop();
-    setNeedsRetry();
-    return;
+  //Serial.println(line);
+  
+  Serial.print("\nParsing result... ");
+  if (line.indexOf("\"success\":true") != -1) {
+    Serial.println("Success.");
+    callback(true,line);
+    return true;
   } 
-  Serial.println("Success.");
+  
+  Serial.println("Failed.");
+  callback(false,"");
+  return false;
+}
 
-  client.println("POST /services/data/"+ String(SFRA_API) +"/actions/custom/flow/"+ flow +" HTTP/1.1");
+//------------------------------------------------------------------------------------
+bool SFManager::executeFlowRequest(String flowName, String requestBody, UtilSFRACallback callback){
+
+  WiFiClientSecure client = getInstanceClient();
+  if( !client.connected() ){
+    return false;
+  }
+
+  client.println("POST /services/data/"+ String(SFRA_API) +"/actions/custom/flow/"+ flowName +" HTTP/1.1");
   client.println("Host: "+ instance);
   client.println("Content-Type: application/json");
   client.println("Content-Length: "+ String(requestBody.length(), DEC));
@@ -279,29 +409,31 @@ void SFManager::flowRequest(){
   client.println(requestBody);
 
   Serial.print("Flow result... ");
-  while (client.connected()) {
+  unsigned long readTime = millis() + UTILS_SF_READ_TIME;
+
+  while (client.connected() && readTime < millis()) {
     String line = client.readStringUntil('\n');
     Serial.print(line);
     if (line == "\r") {
-      Serial.print("Done.");
+      Serial.println("Done.");
       break;
     }
   }
-  Serial.println("");
-
-  Serial.print("Reading result... ");
+  
   String line = client.readString();
-  Serial.println("");
-  Serial.println(line);
+  client.stop();
 
-  if (line.indexOf("\"success\":true") != -1) {
+  Serial.println("\nParsing result.");
+  if (line.indexOf("isSuccess\":true") != -1) {
     Serial.println("Success.");
-    flowCallback("Data",true);
-  } else {
-    Serial.println("Failed.");
-    flowCallback("",false);
-  }
-
+    callback(true,line);
+    return true;
+  } 
+  
+  Serial.println("Failed.");
+  callback(false,"");
+  return false;
+  
   //{"message":"Unexpected character ('j' (code 106)): was expecting a colon to separate field name and value at [line:1, column:18]","errorCode":"JSON_PARSER_ERROR"}
   //{"id":"e09xx0000000001AAA","success":true,"errors":[{"statusCode":"OPERATION_ENQUEUED","message":"48eedfc5-f9eb-4fbb-8cba-2d49f9f98022","fields":[]}]}
 
@@ -317,107 +449,45 @@ void SFManager::flowRequest(){
   //   setNeedsRetry();
   // }
 
-  client.stop(); 
-  requestState = sf_idle;
-  flowCallback = nullptr;
-}
-
-
-//------------------------------------------------------------------------------------
-void SFManager::platformRequest(SFManagerCallback callback){
-  if(platformCallback != nullptr){
-    Serial.println("SFManager : Pending Platform Request");
-  }
-
-  platformCallback = callback;
-  platformRequest();
-}
-
-//------------------------------------------------------------------------------------
-void SFManager::platformRequest(){
-  requestState = sf_platform;
-
-  if(!verifyToken()){
-    setNeedsRetry();
-    return;
-  }
-  
-  String platformEvent = "TestPlatformEvent__e";
-  String eventField = "jandolina@salesforce.com";
-  String eventPayload = "Hello, Are you comfortable with recieveing emails from Platform Events? Yours Truly, The Microcontroller";
-  String requestBody = "{\"TestField__c\":\""+ eventField +"\",\"TestPayload__c\":\""+eventPayload+"\"}";
-
-  Serial.println(requestBody);
-
-  WiFiClientSecure client;
-  Serial.printf("Connecting to %s... ", instance.c_str());
-  if (!client.connect(instance.c_str(), hostPort)) {
-    Serial.println("Failed.");
-    client.stop();
-    setNeedsRetry();
-    return;
-  } 
-  Serial.println("Success.");
-
-  client.println("POST /services/data/"+ String(SFRA_API) +"/sobjects/"+ platformEvent +" HTTP/1.1");
-  client.println("Host: "+ instance);
-  client.println("Content-Type: application/json");
-  client.println("Content-Length: "+ String(requestBody.length(), DEC));
-  client.println("Authorization: Bearer "+ token);
-  client.println();
-  client.println(requestBody);
-
-  Serial.print("Platform Event result... ");
-  while (client.connected()) {
-    String line = client.readStringUntil('\n');
-    Serial.print(line);
-    if (line == "\r") {
-      Serial.print("Done.");
-      break;
-    }
-  }
-  Serial.println("");
-
-  Serial.print("Reading result... ");
-  String line = client.readString();
-  Serial.println("");
-  Serial.println(line);
-
-  if (line.indexOf("\"success\":true") != -1) {
-    Serial.println("Success.");
-    platformCallback("Data",true);
-  } else {
-    Serial.println("Failed.");
-    platformCallback("",false);
-  }
-
-  client.stop(); 
-  requestState = sf_idle;
-  platformCallback = nullptr;
+  // client.stop(); 
+  // requestState = sf_state_idle;
+  //flowCallback = nullptr;
 }
 
 //------------------------------------------------------------------------------------
 void SFManager::loop(){  
-  if (refreshTime != 0 && refreshTime < millis()){
-    refreshTime = 0;
-    refreshToken();
-    return;
+  // if (refreshTime != 0 && refreshTime < millis()){
+  //   refreshTime = 0;
+  //   refreshToken();
+  //   return;
+  // }
+
+  // Attempt delayed requests at a resonable interval. 
+  if (retryTime != 0 && retryTime < millis()){
+    
+    // If there are outstanding requests, attempt to execute one.
+    if( pendingRequests() ){
+      executeRequest();
+    }
+
+    // Set the delay for the next execution cycle.
+    setNeedsRetry();
   }
 
-  if (retryTime != 0 && retryTime < millis()){
-    retryTime = 0;
-    switch(requestState) {
-      case sf_flow:
-        Serial.println("SFManager : Flow Request");
-        flowRequest();
-        break;
-      case sf_platform:
-        Serial.println("SFManager : Platform Request");
-        platformRequest();
-        break;
-      default:
-      break;
-    }
-  }
+  // if (retryTime != 0 && retryTime < millis()){
+  //   retryTime = 0;
+  //   switch(requestState) {
+  //     case sf_state_flow:
+  //       Serial.println("SFManager : Flow Request");
+  //       flowRequest();
+  //       break;
+  //     case sf_state_platform:
+  //       Serial.println("SFManager : Platform Request");
+  //       platformRequest();
+  //       break;
+  //     default:
+  //     break;
+  //   }
+  // }
 }
 #endif
