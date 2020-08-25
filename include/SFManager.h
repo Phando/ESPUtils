@@ -325,7 +325,7 @@ void SFManager::scheduleRequest(UtilSFRARequestType type, String targetName, Str
   pushIndex = nextIndex(pushIndex);
   //pushIndex = ++pushIndex == UTILS_SF_CAPACITY ? 0 : pushIndex;
   Serial.println("Push: "+ String(pushIndex) +" - "+ String(popIndex));
-  executeRequest();
+  //executeRequest();
 }
 
 //------------------------------------------------------------------------------------
@@ -423,6 +423,7 @@ bool SFManager::executeFlowRequest(String flowName, String requestBody, UtilSFRA
   String line = client.readString();
   client.stop();
 
+  //Serial.println(line);
   Serial.println("\nParsing result.");
   if (line.indexOf("isSuccess\":true") != -1) {
     Serial.println("Success.");

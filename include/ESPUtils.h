@@ -8,11 +8,16 @@
 
 ---------------------------------------------------------------------
 
-The easiest way to configure ESPUtils is to copy SampleConfig.h to Config.h
-and populate the new file with your project specific values. More information 
-can be found in the README.md and in the Config.h file.
+The easiest way to configure ESPUtils is to copy Config.h to your project
+and populate the new file with your project specific values. Be sure to 
+uncomment the appropriate lines below to include specific functionality. 
+The reason for this complexity is to save space on the microcontroller by 
+only including the needed libraries. That said, the min_spiffs partition 
+table helps give apps a little extra space. More information can be found 
+in the README.md and in the Config.h file.
 
 ---------------------------------------------------------------------*/
+
 #include <UtilCommon.h>
 #include <UtilMessage.h>
 #include <Preferences.h>
@@ -183,6 +188,7 @@ void ESPUtils::loop(void) {
   #ifdef USE_SFRA
   SFMan.loop();
   #endif
+  yield();
 }
 
 #endif
