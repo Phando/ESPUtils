@@ -9,7 +9,7 @@
 
 #include <WiFiManager.h>
 #define UTILS_SF_CAPACITY 20
-#define UTILS_SF_READ_TIME 1000
+#define UTILS_SF_READ_TIME 2000
 
 enum UtilSFRATokenState { 
   sf_token_empty, 
@@ -55,17 +55,10 @@ public:
   void eventRequest(String eventName, String requestBody, UtilSFRACallback callback);
   void flowRequest(String flowName, String requestBody, UtilSFRACallback callback);
   void loop();
-  
-  //SFManager(){requestToken();};
 
 //protected:
 
 private:
-  // SFManagerCallback tokenCallback;
-  // SFManagerCallback refreshCallback;
-  // SFManagerCallback flowCallback;
-  // SFManagerCallback platformCallback;
-
   WiFiClientSecure getAuthClient();
   WiFiClientSecure getInstanceClient();
   int nextIndex(int index);
@@ -263,49 +256,6 @@ void SFManager::refreshToken(){
   String requestBody = "grant_type=refresh_token&client_id=" + String(SFRA_CLIENT_ID) + 
     "&client_secret=" + String(SFRA_CLIENT_SECRET) + 
     "&refresh_token=" + token;
-
-  Serial.printf("Connecting to %s... ", SFRA_HOST);
-  
-  if (!client.connect(SFRA_HOST, SFRA_PORT)) {
-    Serial.println("Failed.");
-    setNeedsRetry();
-    return;
-  } else {
-    Serial.println("Success.");
-  }
- 
-  client.println("POST /services/oauth2/token HTTP/1.1");
-  client.println("Host: " + String(SFRA_HOST));
-  client.println("Content-Type: application/x-www-form-urlencoded");
-  client.print("Content-Length: ");
-  client.println(requestBody.length());
-  client.println();
-  client.println(requestBody);
-
-  Serial.print("Refresh request sent, waiting for result... ");
-  while (client.connected()) {
-    String line = client.readStringUntil('\n');
-    if (line == "\r") {
-      Serial.println("Done.");
-      break;
-    }
-  }
-  
-  Serial.print("Reading token... ");
-  String line = client.readString();
-  Serial.println(line);
-  if (line.indexOf("\"access_token\":\"") != -1) {
-    Serial.println("Success.");
-    setNeedsRefresh();
-    token = line.substring(line.indexOf("\"access_token\":\"") + 16, line.indexOf("\",\"instance_url\""));
-    Serial.println(token);
-    //instance = line.substring(line.indexOf("\"instance_url\":\"") + 16 + 8, line.indexOf("\",\"id\""));
-  } else {
-    Serial.println("Failed.");
-    setNeedsRetry();
-  }
-
-  client.stop();  
   */
 }
  
@@ -323,9 +273,10 @@ void SFManager::flowRequest(String flowName, String requestBody, UtilSFRACallbac
 void SFManager::scheduleRequest(UtilSFRARequestType type, String targetName, String requestBody, UtilSFRACallback callback){
   requestList[pushIndex] = {type, targetName, requestBody, callback};
   pushIndex = nextIndex(pushIndex);
+
   //pushIndex = ++pushIndex == UTILS_SF_CAPACITY ? 0 : pushIndex;
   Serial.println("Push: "+ String(pushIndex) +" - "+ String(popIndex));
-  //executeRequest();
+  executeRequest();
 }
 
 //------------------------------------------------------------------------------------
@@ -423,7 +374,6 @@ bool SFManager::executeFlowRequest(String flowName, String requestBody, UtilSFRA
   String line = client.readString();
   client.stop();
 
-  //Serial.println(line);
   Serial.println("\nParsing result.");
   if (line.indexOf("isSuccess\":true") != -1) {
     Serial.println("Success.");
@@ -431,7 +381,7 @@ bool SFManager::executeFlowRequest(String flowName, String requestBody, UtilSFRA
     return true;
   } 
   
-  Serial.println("Failed.");
+  Serial.println("Failed: " + line);
   callback(false,"");
   return false;
   
