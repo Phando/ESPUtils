@@ -3,7 +3,7 @@ A library to make developing on ESP32 devices easy. Includes BLE Communitcation,
 
 \** The SFManager could be absrtracted to be an OAuth bearer connector at a later date
 
-# Examples
+# Examples (WIP)
 All Examples are inteded for use in [PlatformIO](https://platformio.org/). You can see the collection of examples to help get you started in the [examples folder](examples)
 
 # Library

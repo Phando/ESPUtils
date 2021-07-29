@@ -13,7 +13,7 @@
         "type": "git",
         "url": "git@github.com:Phando/ESPUtils.git"
     },
-    "version": "0.1.3",
+    "version": "0.1.4",
     "license": "MIT",
     "homepage": "https://github.com/Phando/ESPUtils",
     "frameworks": "arduino",
