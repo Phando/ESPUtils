@@ -32,7 +32,9 @@
         "exclude":
         [
             ".pio",
-            ".vscode"
+            ".vscode",
+            ".git",
+            ".gitignore"
         ]
     }
 }
